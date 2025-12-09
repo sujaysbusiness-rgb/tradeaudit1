@@ -296,11 +296,50 @@
             const avgHoldWin = wins ? durationWin/wins : 0;
             const avgHoldLoss = losses ? durationLoss/losses : 0;
 
+            // --- SECOND PASS: PSYCHOLOGICAL ANALYSIS ---
+            let currentWinStreak = 0;
+            let streakBlowoutCount = 0; // Trades where you lost big after a streak
+            let revengeTradeCount = 0; // Trades taken < 15 mins after a loss
+            let revengeLossCount = 0; // Revenge trades that failed
+
+            for (let i = 0; i < completedTrades.length; i++) {
+                const t = completedTrades[i];
+                
+                // Streak Logic
+                if (t.netPnL > 0) {
+                    currentWinStreak++;
+                } else {
+                    // It's a loss. Was it after a streak?
+                    if (currentWinStreak >= 3) {
+                        // Check if this loss is larger than average loss
+                        if (t.netPnL < avgLoss * 1.5) { // e.g. Loss is -3000, avg is -1000. -3000 < -1500.
+                            streakBlowoutCount++;
+                        }
+                    }
+                    currentWinStreak = 0;
+                }
+
+                // Revenge Trading Logic
+                if (i > 0) {
+                    const prev = completedTrades[i-1];
+                    if (prev.netPnL < 0) {
+                        // Previous trade was a loss. How fast did we re-enter?
+                        const timeDiff = (t.entryTime - prev.exitTime) / 60000; // minutes
+                        if (timeDiff >= 0 && timeDiff < 15) {
+                            revengeTradeCount++;
+                            if (t.netPnL < 0) revengeLossCount++;
+                        }
+                    }
+                }
+            }
+
+            // --- REVIEW GENERATION ---
             const review = {
                 grade: "C", title: "Developing", color: "text-slate-600", bg: "bg-slate-100",
                 strategic: [], behavioral: [], actionable: []
             };
 
+            // Grading
             if (totalPnL > 0) {
                 if (profitFactor > 2.0 && maxDD > -(equity * 0.1)) { review.grade = "A+"; review.title = "Market Master"; review.color="text-emerald-600"; review.bg="bg-emerald-50"; }
                 else if (profitFactor > 1.5) { review.grade = "A"; review.title = "Solid Performer"; review.color="text-emerald-600"; review.bg="bg-emerald-50"; }
@@ -311,31 +350,42 @@
                 else { review.grade = "D"; review.title = "Needs Overhaul"; review.color="text-rose-600"; review.bg="bg-rose-50"; }
             }
 
-            if (winRate < 40 && rrRatio < 1.5) review.strategic.push("Critical Flaw: Your strategy has both low accuracy and low payout. You must either increase win rate to >50% or ensure winners are 2x losers.");
-            else if (winRate < 40 && rrRatio > 2.0) review.strategic.push("Sniper Profile: You have a low win rate but excellent R:R. This is stressful but profitable. Stick to the plan during losing streaks.");
-            else if (winRate > 60 && rrRatio < 0.8) review.strategic.push("Scalper Profile: High accuracy but one bad loss wipes out many wins. Tighten your Stop Loss immediately.");
-            else if (winRate > 50 && rrRatio > 1.5) review.strategic.push("Holy Grail Zone: You have found a sweet spot of accuracy and reward. Focus on scaling size slowly.");
+            // Strategic
+            if (winRate < 40 && rrRatio < 1.5) review.strategic.push("Critical Strategic Flaw: Your system currently has both low accuracy and low payout. To be profitable, you either need to boost your Win Rate above 50% or ensure your Winners are at least 2x your Losers.");
+            else if (winRate < 40 && rrRatio > 2.0) review.strategic.push("Sniper Profile Detected: You have a lower win rate, but your winners are massive compared to losers. This is a stressful but professionally valid style. The key is surviving the losing streaks without changing your rules.");
+            else if (winRate > 60 && rrRatio < 0.8) review.strategic.push("Scalper Profile Detected: You rely on high accuracy to make money. However, your Reward:Risk is inverted (losses are bigger than wins). One bad day can wipe out a week of progress. You must tighten your Stop Loss.");
+            else review.strategic.push("Balanced Strategy: Your Win Rate and Risk:Reward are in a healthy equilibrium. Focus on increasing position size slowly rather than changing the strategy.");
             
-            if (avgHoldLoss > avgHoldWin * 1.5) review.strategic.push("Hope Trading Detected: You are holding losers significantly longer than winners. Cut losses faster.");
+            if (avgHoldLoss > avgHoldWin * 1.5) review.strategic.push("Hope Trading Detected: Data shows you hold losing trades significantly longer (" + Math.round(avgHoldLoss) + " mins) than winning trades ("+ Math.round(avgHoldWin) + " mins). This 'holding and hoping' habit is the #1 killer of accounts.");
 
-            if (avgTradesPerDay > 10) review.behavioral.push("Over-trading Alert: You are taking too many trades/day. Are you chasing price or bored?");
-            if (maxDD < -(equity * 0.25) && equity > 0) review.behavioral.push("Risk of Ruin: Your drawdown is too deep (-25%+). You are risking too much per trade. Cut size by half.");
+            // Behavioral
+            if (streakBlowoutCount > 0) {
+                review.behavioral.push(`Overconfidence Bias (Winner's Tilt): We detected ${streakBlowoutCount} instances where you took a massive loss immediately following a 3+ winning streak. You likely relax your risk rules when you feel 'invincible'.`);
+            }
+            if (revengeTradeCount > 2) {
+                const failRate = Math.round((revengeLossCount / revengeTradeCount) * 100);
+                review.behavioral.push(`Revenge Trading Loop: You frequently re-enter the market within 15 minutes of a loss (${revengeTradeCount} times). ${failRate}% of these impulsive trades resulted in further losses. You are trading your P&L, not the chart setup.`);
+            }
+            if (avgTradesPerDay > 10) review.behavioral.push("Over-trading Alert: You are averaging over 10 trades per session. Unless you are an algo, this leads to decision fatigue and high brokerage costs. Try to limit yourself to the 3 best setups per day.");
             
+            // Calendar/Time
             let worstDayIdx = -1, worstDayPnL = Infinity;
             dayStats.forEach((d, i) => { if (i>0 && i<6 && d.count>3 && d.pnl < worstDayPnL) { worstDayPnL = d.pnl; worstDayIdx = i; } });
             if (worstDayPnL < 0) {
-                const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-                review.behavioral.push(`Calendar Leak: You have a specific weakness on ${days[worstDayIdx]}s. Is it expiry pressure or weekly fatigue?`);
+                const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+                review.behavioral.push(`Calendar Weakness: You have a statistically significant leak on ${days[worstDayIdx]}s. This could be due to weekly expiry volatility or end-of-week fatigue. Consider reducing size on this day.`);
             }
             
+            // Check morning volatility (9am-10am)
             const morningPnL = (entryHourStats[9]?.pnl || 0) + (entryHourStats[10]?.pnl || 0);
             if (morningPnL < -Math.abs(totalPnL * 0.1)) review.behavioral.push("Morning Chaos: You are losing money in the opening hour. Avoid trading before 10:30 AM.");
 
-            if (profitFactor < 1.0) review.actionable.push("Pause Scaling: Do not add capital until Profit Factor > 1.2 for 3 consecutive months.");
-            if (rrRatio < 1.0) review.actionable.push("Fix Losers: Avg Loss > Avg Win. Use hard stops.");
-            else review.actionable.push("Optimization: Trail stops to capture bigger wins.");
+            // Actionable
+            if (profitFactor < 1.0) review.actionable.push("Capital Preservation Mode: Stop increasing your position size. Do not add funds until your Profit Factor crosses 1.2 for at least 30 trades.");
+            if (rrRatio < 1.0) review.actionable.push("Hard Stop Loss: Your average loss is larger than your average win. Implement a mechanical Hard Stop in the system that auto-exits trades to prevent emotional holding.");
+            else review.actionable.push("Maximize Winners: Your risk management is decent. Now focus on 'Trailing Stops' to let your winning trades run longer and improve expectancy.");
             
-            if (avgHoldLoss > avgHoldWin) review.actionable.push("Time Stop: If a trade doesn't work in " + Math.round(avgHoldWin) + " mins, exit immediately.");
+            if (avgHoldLoss > avgHoldWin) review.actionable.push("Time-Based Exit: If a trade is not profitable within " + Math.round(avgHoldWin) + " minutes, close it immediately. Do not give it 'more room' if it's acting sluggish.");
 
             const sortedInstruments = Object.entries(instrumentStats)
                 .map(([name, s]) => ({ name, ...s }))
@@ -392,7 +442,7 @@
                             <h4 className="flex items-center gap-2 font-bold text-slate-900 mb-3">
                                 <Icon name="crosshair" size={18} className="text-blue-600"/> Strategic Analysis
                             </h4>
-                            <ul className="space-y-2">
+                            <ul className="space-y-3">
                                 {review.strategic.map((text, i) => (
                                     <li key={i} className="text-sm text-slate-600 leading-relaxed flex items-start gap-2">
                                         <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0"></span> {text}
@@ -406,7 +456,7 @@
                             <h4 className="flex items-center gap-2 font-bold text-slate-900 mb-3">
                                 <Icon name="brain-circuit" size={18} className="text-purple-600"/> Behavioral Patterns
                             </h4>
-                            <ul className="space-y-2">
+                            <ul className="space-y-3">
                                 {review.behavioral.map((text, i) => (
                                     <li key={i} className="text-sm text-slate-600 leading-relaxed flex items-start gap-2">
                                         <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0"></span> {text}
@@ -569,6 +619,14 @@
             const [data, setData] = useState(null);
             const [error, setError] = useState(null);
             const fileRef = useRef(null);
+            const uploadSectionRef = useRef(null); // Ref for auto-scroll
+
+            // Effect to scroll when broker is selected
+            useEffect(() => {
+                if (selectedBroker && uploadSectionRef.current) {
+                    uploadSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }, [selectedBroker]);
 
             const handleFile = (e) => {
                 const file = e.target.files[0];
@@ -584,17 +642,61 @@
                 reader.readAsText(file);
             };
 
+            const loadDemoData = () => {
+                let csv = "symbol,trade_date,order_execution_time,trade_type,quantity,price\n";
+                let currentDate = new Date();
+                currentDate.setMonth(currentDate.getMonth() - 3); 
+
+                const instruments = ["NIFTY", "BANKNIFTY", "RELIANCE", "INFY"];
+                
+                for (let i = 0; i < 50; i++) { 
+                    currentDate.setDate(currentDate.getDate() + Math.floor(Math.random() * 2) + 1); 
+                    if (currentDate.getDay() === 0 || currentDate.getDay() === 6) continue; 
+
+                    const dateStr = currentDate.toISOString().split('T')[0];
+                    const symbol = instruments[Math.floor(Math.random() * instruments.length)] + " FUT";
+                    const isWin = Math.random() > 0.45; 
+                    const entryPrice = 1000 + Math.random() * 2000;
+                    const qty = 50;
+                    
+                    const entryHour = 9 + Math.floor(Math.random() * 5);
+                    const exitHour = entryHour + Math.floor(Math.random() * (15 - entryHour));
+                    
+                    const entryTime = `${dateStr}T${entryHour.toString().padStart(2,'0')}:${Math.floor(Math.random()*59).toString().padStart(2,'0')}:00`;
+                    const exitTime = `${dateStr}T${exitHour.toString().padStart(2,'0')}:${Math.floor(Math.random()*59).toString().padStart(2,'0')}:00`;
+
+                    const exitPrice = isWin 
+                        ? entryPrice * (1 + (Math.random() * 0.02 + 0.005)) 
+                        : entryPrice * (1 - (Math.random() * 0.015 + 0.005)); 
+
+                    csv += `${symbol},${dateStr},${entryTime},buy,${qty},${entryPrice.toFixed(2)}\n`;
+                    csv += `${symbol},${dateStr},${exitTime},sell,${qty},${exitPrice.toFixed(2)}\n`;
+                }
+
+                try {
+                    const result = parseTradeData(csv, 'zerodha');
+                    setData(result);
+                    setSelectedBroker('zerodha');
+                    setError(null);
+                } catch (e) {
+                    setError("Could not load demo data: " + e.message);
+                }
+            };
+
+            const handleReload = () => {
+                window.location.reload();
+            };
+
             return (
                 <div className="min-h-screen pb-20 flex flex-col bg-slate-50/50">
                     <nav className="glass border-b border-slate-200 sticky top-0 z-40">
                         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 cursor-pointer" onClick={handleReload}>
                                 <div className="bg-slate-900 text-white p-2.5 rounded-xl shadow-lg shadow-slate-200"><Icon name="bar-chart-big" size={24} /></div>
                                 <div><h1 className="font-extrabold text-xl text-slate-900 leading-none tracking-tight">Trade Audit Pro</h1><span className="text-[11px] font-bold text-blue-600 tracking-wide uppercase">by Trading With Sujay</span></div>
                             </div>
                             {data && (
                                 <div className="flex gap-2">
-                                    <button onClick={() => window.print()} className="text-sm font-semibold text-slate-600 hover:text-slate-900 flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg shadow-sm transition no-print"><Icon name="download" size={16} /> Save PDF</button>
                                     <button onClick={() => { setData(null); setSelectedBroker(null); }} className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm transition no-print"><Icon name="plus" size={16} /> New Audit</button>
                                 </div>
                             )}
@@ -605,8 +707,17 @@
                         {!data ? (
                             <div className="max-w-4xl mx-auto mt-16 px-6 animate-fade-in">
                                 <div className="text-center mb-12">
+                                    <div className="inline-flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide mb-6 border border-emerald-100 shadow-sm">
+                                        <Icon name="shield-check" size={14} /> 100% Client-Side Privacy
+                                    </div>
                                     <h1 className="text-4xl md:text-5xl font-extrabold text-slate-900 mb-6 tracking-tight">Professional Audit <br/> <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">For Your Trading Journey</span></h1>
-                                    <p className="text-lg text-slate-500 max-w-2xl mx-auto">Upload your broker's CSV to get instant, actionable insights. Secure and private.</p>
+                                    <p className="text-lg text-slate-500 max-w-2xl mx-auto">Upload your broker's CSV to get instant, actionable insights. Secure and private. Financial data never leaves your browser.</p>
+                                    
+                                    <div className="mt-8 flex justify-center gap-4">
+                                        <button onClick={loadDemoData} className="bg-white hover:bg-slate-50 text-slate-700 font-bold py-3 px-6 rounded-xl border border-slate-200 shadow-sm transition flex items-center gap-2">
+                                            <Icon name="play-circle" size={18} /> Try Demo Data
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8 max-w-3xl mx-auto">
                                     {Object.entries(BROKERS).map(([key, conf]) => (
@@ -617,7 +728,7 @@
                                     ))}
                                 </div>
                                 {selectedBroker && (
-                                    <div className="bg-white p-8 rounded-2xl border border-blue-100 shadow-xl shadow-blue-50/50 text-center max-w-lg mx-auto">
+                                    <div ref={uploadSectionRef} className="bg-white p-8 rounded-2xl border border-blue-100 shadow-xl shadow-blue-50/50 text-center max-w-lg mx-auto">
                                         <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4"><Icon name="upload-cloud" size={24} /></div>
                                         <h3 className="text-lg font-bold text-slate-900 mb-2">Upload CSV</h3>
                                         <button onClick={() => fileRef.current.click()} className="bg-slate-900 hover:bg-slate-800 text-white px-8 py-3 rounded-lg font-bold shadow-lg shadow-slate-200 transition active:scale-95">Select File</button>
