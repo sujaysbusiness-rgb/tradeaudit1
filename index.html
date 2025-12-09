@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trade Audit Pro | Sujay Sharma</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        
+        body { background-color: #f8fafc; font-family: 'Plus Jakarta Sans', sans-serif; color: #0f172a; }
+        .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        .card { background: white; border-radius: 1rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
+        .tooltip { visibility: hidden; opacity: 0; transition: opacity 0.2s; }
+        .has-tooltip:hover .tooltip { visibility: visible; opacity: 1; }
+        
+        /* Print Styles */
+        @media print {
+            body { background-color: white; }
+            .no-print { display: none !important; }
+            .print-break { break-inside: avoid; }
+            .card { border: 1px solid #ccc; box-shadow: none; break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // --- EXPLANATIONS DATABASE ---
+        const METRIC_INFO = {
+            "Net P&L": "Your total profit or loss after deducting all brokerage and taxes. This is what actually hits your bank.",
+            "Win Rate": "Percentage of trades that ended in profit. High win rate isn't necessary if your winners are big.",
+            "Profit Factor": "Gross Profit divided by Gross Loss. > 1.5 is healthy. > 2.0 is excellent. < 1.0 means the system is losing.",
+            "Max Drawdown": "The largest peak-to-trough decline in your account equity. It measures the risk/pain of the strategy.",
+            "Expectancy": "The average amount you can expect to make (or lose) per trade over the long run.",
+            "Risk:Reward": "Ratio of Average Win to Average Loss. 1:2 means you make ₹2 for every ₹1 risk.",
+            "Avg Win": "The average profit amount of your winning trades.",
+            "Avg Loss": "The average loss amount of your losing trades."
+        };
+
+        // --- BROKER CONFIGURATIONS ---
+        const BROKERS = {
+            kotak: {
+                id: 'kotak', name: "Kotak Securities", color: "text-red-600", bg: "bg-red-50",
+                mappings: { security: "Security Name", date: "Trade Date", time: "Trade Time", type: "Transaction Type", qty: "Quantity", price: "Market Rate", charges: "Total Charges" },
+                dateFmt: "dd/mm/yyyy"
+            },
+            zerodha: {
+                id: 'zerodha', name: "Zerodha (Kite)", color: "text-blue-600", bg: "bg-blue-50",
+                mappings: { security: "symbol", date: "trade_date", time: "order_execution_time", type: "trade_type", qty: "quantity", price: "price", charges: null },
+                dateFmt: "iso"
+            },
+            dhan: {
+                id: 'dhan', name: "Dhan", color: "text-purple-600", bg: "bg-purple-50",
+                mappings: { security: "Name", date: "Date", time: "Time", type: "Buy/Sell", qty: "Quantity/Lot", price: "Trade Price", charges: null },
+                dateFmt: "yyyy-mm-dd"
+            },
+            angel: {
+                id: 'angel', name: "Angel One", color: "text-orange-600", bg: "bg-orange-50",
+                mappings: { security: "Symbol", date: "Trade Date", time: "Order Time", type: "Trade Type", qty: "Quantity", price: "Price" },
+                dateFmt: "dd-mm-yyyy"
+            },
+            upstox: {
+                id: 'upstox', name: "Upstox", color: "text-indigo-600", bg: "bg-indigo-50",
+                mappings: { security: "Scrip Name", date: "Date", time: "Time", type: "Type", qty: "Qty", price: "Price" },
+                dateFmt: "dd/mm/yyyy"
+            },
+            groww: {
+                id: 'groww', name: "Groww", color: "text-emerald-600", bg: "bg-emerald-50",
+                mappings: { security: "Stock Name", date: "Date", time: null, type: "Type", qty: "Qty", price: "Avg Price" },
+                dateFmt: "dd-mm-yyyy"
+            }
+        };
+
+        const Icon = ({ name, size = 18, className }) => {
+            useEffect(() => { lucide.createIcons(); }, [name]);
+            return <i data-lucide={name} width={size} height={size} className={className}></i>;
+        };
+
+        // --- PARSING ENGINE (ROUND TRIP) ---
+        const parseTradeData = (text, brokerId) => {
+            const config = BROKERS[brokerId];
+            const map = config.mappings;
+            const lines = text.split('\n').filter(l => l.trim());
+            if (lines.length < 2) throw new Error("File appears empty or invalid.");
+
+            const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+            const getIdx = (key) => {
+                if (!key) return -1;
+                const exact = lines[0].split(',').findIndex(h => h.trim() === key);
+                if (exact !== -1) return exact;
+                return headers.indexOf(key.toLowerCase());
+            };
+
+            const idxs = {
+                sec: getIdx(map.security), date: getIdx(map.date), time: getIdx(map.time),
+                type: getIdx(map.type), qty: getIdx(map.qty), price: getIdx(map.price), charges: getIdx(map.charges)
+            };
+
+            if (idxs.sec === -1 || idxs.qty === -1 || idxs.price === -1) {
+                throw new Error(`Column mismatch. Are you sure this is a ${config.name} file? Missing columns.`);
+            }
+
+            const parseNum = (s) => parseFloat((s || '0').replace(/,/g, '')) || 0;
+
+            // 1. EXTRACT ALL RAW TRANSACTIONS
+            const transactions = [];
+            const rows = lines.slice(1).map(line => line.split(',').map(c => c.trim()));
+
+            rows.forEach(vals => {
+                if (vals.length < headers.length) return;
+                const sec = vals[idxs.sec];
+                if (!sec) return;
+
+                let dateObj = new Date();
+                const dStr = vals[idxs.date];
+                const tStr = idxs.time !== -1 ? vals[idxs.time] : '00:00:00';
+
+                try {
+                    if (config.dateFmt === 'iso' && tStr.includes('T')) {
+                        dateObj = new Date(tStr);
+                    } else if (dStr) {
+                        const cleanDate = dStr.replace(/-/g, '/');
+                        const parts = cleanDate.split('/');
+                        let y, m, d;
+                        if (config.dateFmt.includes('dd') && config.dateFmt.indexOf('dd') < config.dateFmt.indexOf('mm')) { [d, m, y] = parts; } 
+                        else { [y, m, d] = parts; }
+                        if (y && y.length === 2) y = '20' + y;
+                        const timeString = (tStr && tStr.toLowerCase() !== 'nan') ? tStr : '00:00:00';
+                        dateObj = new Date(`${y}-${m}-${d}T${timeString}`);
+                    }
+                } catch (e) { return; }
+                if (isNaN(dateObj.getTime())) return;
+
+                const qty = Math.abs(parseNum(vals[idxs.qty]));
+                const price = parseNum(vals[idxs.price]);
+                const charges = idxs.charges !== -1 ? parseNum(vals[idxs.charges]) : 0;
+                const typeStr = (vals[idxs.type] || '').toLowerCase();
+                const isBuy = typeStr.includes('buy') || typeStr === 'b' || typeStr === 'dr'; 
+                
+                transactions.push({
+                    sec,
+                    time: dateObj,
+                    qty,
+                    price,
+                    charges,
+                    isBuy
+                });
+            });
+
+            transactions.sort((a, b) => a.time - b.time);
+
+            // 3. ROUND TRIP PROCESSING
+            const completedTrades = [];
+            const openPositions = {}; 
+
+            transactions.forEach(txn => {
+                if (!openPositions[txn.sec]) {
+                    openPositions[txn.sec] = { qty: 0, netCashflow: 0, charges: 0, entryTime: txn.time, exitTime: txn.time };
+                }
+
+                const pos = openPositions[txn.sec];
+                const amount = txn.qty * txn.price;
+                
+                if (txn.isBuy) { pos.qty += txn.qty; pos.netCashflow -= amount; } 
+                else { pos.qty -= txn.qty; pos.netCashflow += amount; }
+                
+                pos.charges += txn.charges;
+                pos.netCashflow -= txn.charges; 
+                pos.exitTime = txn.time;
+                
+                if (Math.abs(pos.qty) < 0.0001) {
+                    completedTrades.push({
+                        id: txn.sec,
+                        netPnL: pos.netCashflow,
+                        charges: pos.charges,
+                        entryTime: pos.entryTime,
+                        exitTime: pos.exitTime,
+                        durationMins: (pos.exitTime - pos.entryTime) / 60000,
+                        monthKey: pos.exitTime.toLocaleString('default', { month: 'short', year: '2-digit' }),
+                        dayOfWeek: pos.exitTime.getDay(),
+                        entryHour: pos.entryTime.getHours(),
+                        exitHour: pos.exitTime.getHours(),
+                        dateStr: pos.exitTime.toISOString().split('T')[0]
+                    });
+                    delete openPositions[txn.sec];
+                }
+            });
+
+            if (completedTrades.length === 0) throw new Error("No completed trades found. (Did you close your positions?)");
+
+            // 4. STATS AGGREGATION
+            let wins=0, losses=0, sumWin=0, sumLoss=0, equity=0, peak=0, maxDD=0;
+            let durationWin=0, durationLoss=0;
+            const equityCurve = [];
+            const monthlyStats = {};
+            const dayStats = Array(7).fill(null).map(() => ({ pnl: 0, count: 0, wins: 0 }));
+            const entryHourStats = Array(24).fill(null).map(() => ({ pnl: 0, count: 0 }));
+            const exitHourStats = Array(24).fill(null).map(() => ({ pnl: 0, count: 0 }));
+            const instrumentStats = {};
+
+            completedTrades.sort((a,b) => a.exitTime - b.exitTime);
+
+            completedTrades.forEach(t => {
+                if (!monthlyStats[t.monthKey]) monthlyStats[t.monthKey] = { pnl: 0, trades: 0, wins: 0, sumWin: 0, sumLoss: 0 };
+                
+                monthlyStats[t.monthKey].pnl += t.netPnL;
+                monthlyStats[t.monthKey].trades++;
+
+                dayStats[t.dayOfWeek].pnl += t.netPnL;
+                dayStats[t.dayOfWeek].count++;
+
+                // Hourly
+                if(t.entryHour >= 0 && t.entryHour < 24) {
+                    entryHourStats[t.entryHour].pnl += t.netPnL;
+                    entryHourStats[t.entryHour].count++;
+                }
+                if(t.exitHour >= 0 && t.exitHour < 24) {
+                    exitHourStats[t.exitHour].pnl += t.netPnL;
+                    exitHourStats[t.exitHour].count++;
+                }
+
+                // --- INSTRUMENT GROUPING LOGIC (INDIAN MARKETS) ---
+                let symbolRoot = t.id;
+                const upperId = t.id.toUpperCase();
+                
+                // Priority Check for Indices
+                if (upperId.includes('BANKNIFTY')) symbolRoot = 'BANKNIFTY';
+                else if (upperId.includes('FINNIFTY')) symbolRoot = 'FINNIFTY';
+                else if (upperId.includes('MIDCPNIFTY')) symbolRoot = 'MIDCPNIFTY';
+                else if (upperId.includes('NIFTY')) symbolRoot = 'NIFTY'; // Matches NIFTY25... or OPTIDXNIFTY...
+                else if (upperId.includes('SENSEX')) symbolRoot = 'SENSEX';
+                else if (upperId.includes('BANKEX')) symbolRoot = 'BANKEX';
+                else {
+                    // Fallback for stocks: Clean up dates/strikes 
+                    // Example: RELIANCE25JUL... -> RELIANCE
+                    // Regex looks for the first sequence of letters
+                    const match = symbolRoot.match(/^([A-Z\s]+)/); 
+                    if (match) symbolRoot = match[1].trim();
+                }
+
+                if(!instrumentStats[symbolRoot]) instrumentStats[symbolRoot] = { pnl: 0, trades: 0 };
+                instrumentStats[symbolRoot].pnl += t.netPnL;
+                instrumentStats[symbolRoot].trades++;
+
+                equity += t.netPnL;
+                peak = Math.max(peak, equity);
+                const dd = equity - peak;
+                maxDD = Math.min(maxDD, dd);
+
+                equityCurve.push({ x: t.dateStr, y: equity });
+
+                if (t.netPnL > 0) {
+                    wins++; 
+                    sumWin += t.netPnL; 
+                    monthlyStats[t.monthKey].wins++;
+                    monthlyStats[t.monthKey].sumWin += t.netPnL;
+                    dayStats[t.dayOfWeek].wins++;
+                    durationWin += t.durationMins;
+                } else {
+                    losses++; 
+                    sumLoss += Math.abs(t.netPnL);
+                    monthlyStats[t.monthKey].sumLoss += Math.abs(t.netPnL);
+                    durationLoss += t.durationMins;
+                }
+            });
+
+            const totalPnL = equity; 
+            const totalTrades = completedTrades.length;
+            const winRate = totalTrades ? (wins/totalTrades)*100 : 0;
+            const avgWin = wins ? sumWin/wins : 0;
+            const avgLoss = losses ? sumLoss/losses : 0;
+            const profitFactor = sumLoss ? sumWin/sumLoss : 0;
+            const expectancy = (winRate/100 * avgWin) - ((100-winRate)/100 * avgLoss);
+            const rrRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+            const avgTradesPerDay = totalTrades / (new Set(completedTrades.map(t => t.dateStr)).size || 1);
+            const avgHoldWin = wins ? durationWin/wins : 0;
+            const avgHoldLoss = losses ? durationLoss/losses : 0;
+
+            const review = {
+                grade: "C", title: "Developing", color: "text-slate-600", bg: "bg-slate-100",
+                strategic: [], behavioral: [], actionable: []
+            };
+
+            if (totalPnL > 0) {
+                if (profitFactor > 2.0 && maxDD > -(equity * 0.1)) { review.grade = "A+"; review.title = "Market Master"; review.color="text-emerald-600"; review.bg="bg-emerald-50"; }
+                else if (profitFactor > 1.5) { review.grade = "A"; review.title = "Solid Performer"; review.color="text-emerald-600"; review.bg="bg-emerald-50"; }
+                else if (profitFactor > 1.2) { review.grade = "B"; review.title = "Consistent"; review.color="text-blue-600"; review.bg="bg-blue-50"; }
+                else { review.grade = "B-"; review.title = "Marginally Profitable"; review.color="text-blue-600"; review.bg="bg-blue-50"; }
+            } else {
+                if (profitFactor > 0.8) { review.grade = "C"; review.title = "Breakeven Struggle"; review.color="text-orange-500"; review.bg="bg-orange-50"; }
+                else { review.grade = "D"; review.title = "Needs Overhaul"; review.color="text-rose-600"; review.bg="bg-rose-50"; }
+            }
+
+            if (winRate < 40 && rrRatio < 1.5) review.strategic.push("Critical Flaw: Your strategy has both low accuracy and low payout. You must either increase win rate to >50% or ensure winners are 2x losers.");
+            else if (winRate < 40 && rrRatio > 2.0) review.strategic.push("Sniper Profile: You have a low win rate but excellent R:R. This is stressful but profitable. Stick to the plan during losing streaks.");
+            else if (winRate > 60 && rrRatio < 0.8) review.strategic.push("Scalper Profile: High accuracy but one bad loss wipes out many wins. Tighten your Stop Loss immediately.");
+            else if (winRate > 50 && rrRatio > 1.5) review.strategic.push("Holy Grail Zone: You have found a sweet spot of accuracy and reward. Focus on scaling size slowly.");
+            
+            if (avgHoldLoss > avgHoldWin * 1.5) review.strategic.push("Hope Trading Detected: You are holding losers significantly longer than winners. Cut losses faster.");
+
+            if (avgTradesPerDay > 10) review.behavioral.push("Over-trading Alert: You are taking too many trades/day. Are you chasing price or bored?");
+            if (maxDD < -(equity * 0.25) && equity > 0) review.behavioral.push("Risk of Ruin: Your drawdown is too deep (-25%+). You are risking too much per trade. Cut size by half.");
+            
+            let worstDayIdx = -1, worstDayPnL = Infinity;
+            dayStats.forEach((d, i) => { if (i>0 && i<6 && d.count>3 && d.pnl < worstDayPnL) { worstDayPnL = d.pnl; worstDayIdx = i; } });
+            if (worstDayPnL < 0) {
+                const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+                review.behavioral.push(`Calendar Leak: You have a specific weakness on ${days[worstDayIdx]}s. Is it expiry pressure or weekly fatigue?`);
+            }
+            
+            const morningPnL = (entryHourStats[9]?.pnl || 0) + (entryHourStats[10]?.pnl || 0);
+            if (morningPnL < -Math.abs(totalPnL * 0.1)) review.behavioral.push("Morning Chaos: You are losing money in the opening hour. Avoid trading before 10:30 AM.");
+
+            if (profitFactor < 1.0) review.actionable.push("Pause Scaling: Do not add capital until Profit Factor > 1.2 for 3 consecutive months.");
+            if (rrRatio < 1.0) review.actionable.push("Fix Losers: Avg Loss > Avg Win. Use hard stops.");
+            else review.actionable.push("Optimization: Trail stops to capture bigger wins.");
+            
+            if (avgHoldLoss > avgHoldWin) review.actionable.push("Time Stop: If a trade doesn't work in " + Math.round(avgHoldWin) + " mins, exit immediately.");
+
+            const sortedInstruments = Object.entries(instrumentStats)
+                .map(([name, s]) => ({ name, ...s }))
+                .sort((a,b) => b.pnl - a.pnl);
+
+            return {
+                trades: completedTrades, equityCurve, monthlyStats, dayStats, entryHourStats, exitHourStats, instrumentStats: sortedInstruments, review,
+                metrics: {
+                    totalTrades, winRate, totalPnL: equity, maxDD,
+                    avgWin, avgLoss, profitFactor,
+                    rrRatio,
+                    expectancy
+                },
+                hasCharges: idxs.charges !== -1
+            };
+        };
+
+        // --- COMPONENTS ---
+        
+        const MetricCard = ({ label, value, trend, icon, desc }) => (
+            <div className="card p-6 hover:shadow-lg transition relative has-tooltip group">
+                {desc && (
+                    <div className="tooltip absolute z-20 p-3 -mt-16 text-xs text-white bg-slate-800 rounded shadow-lg max-w-xs left-0 right-0 mx-auto w-max text-center">
+                        {desc} <div className="w-2 h-2 bg-slate-800 rotate-45 mx-auto -mb-4 mt-1"></div>
+                    </div>
+                )}
+                <div className="flex justify-between items-center mb-3">
+                    <div className="p-2.5 bg-slate-50 rounded-xl text-slate-400"><Icon name={icon} size={22} /></div>
+                    <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${trend === 'good' ? 'bg-emerald-50 text-emerald-600' : trend === 'bad' ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-600'}`}>
+                        {trend === 'good' ? 'Healthy' : trend === 'bad' ? 'Check' : 'Neutral'}
+                    </span>
+                </div>
+                <h3 className="text-2xl font-bold text-slate-900 tracking-tight">{value}</h3>
+                <div className="flex items-center gap-1 mt-1">
+                    <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider">{label}</p>
+                    <Icon name="info" size={12} className="text-slate-300 group-hover:text-blue-400 transition" />
+                </div>
+            </div>
+        );
+
+        const DetailedReview = ({ review }) => (
+            <div className="card p-0 overflow-hidden mb-8 border-l-4 border-l-blue-600 print-break">
+                <div className="p-6 md:p-8 flex flex-col md:flex-row gap-8">
+                    <div className="flex flex-col items-center justify-center min-w-[140px] border-b md:border-b-0 md:border-r border-slate-100 pb-6 md:pb-0 md:pr-6">
+                        <div className={`w-24 h-24 rounded-2xl flex items-center justify-center text-5xl font-extrabold ${review.bg} border-4 border-white shadow-lg mb-3`}>
+                            <span className={review.color}>{review.grade}</span>
+                        </div>
+                        <span className={`text-lg font-bold ${review.color}`}>{review.title}</span>
+                        <span className="text-xs text-slate-400 uppercase tracking-wide mt-1">Performance Grade</span>
+                    </div>
+
+                    <div className="flex-grow grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                        <div>
+                            <h4 className="flex items-center gap-2 font-bold text-slate-900 mb-3">
+                                <Icon name="crosshair" size={18} className="text-blue-600"/> Strategic Analysis
+                            </h4>
+                            <ul className="space-y-2">
+                                {review.strategic.map((text, i) => (
+                                    <li key={i} className="text-sm text-slate-600 leading-relaxed flex items-start gap-2">
+                                        <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0"></span> {text}
+                                    </li>
+                                ))}
+                                {review.strategic.length === 0 && <li className="text-sm text-slate-400 italic">Insufficient data for detailed analysis.</li>}
+                            </ul>
+                        </div>
+
+                        <div>
+                            <h4 className="flex items-center gap-2 font-bold text-slate-900 mb-3">
+                                <Icon name="brain-circuit" size={18} className="text-purple-600"/> Behavioral Patterns
+                            </h4>
+                            <ul className="space-y-2">
+                                {review.behavioral.map((text, i) => (
+                                    <li key={i} className="text-sm text-slate-600 leading-relaxed flex items-start gap-2">
+                                        <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0"></span> {text}
+                                    </li>
+                                ))}
+                                {review.behavioral.length === 0 && <li className="text-sm text-slate-400 italic">No negative behavioral patterns detected. Great discipline!</li>}
+                            </ul>
+                        </div>
+
+                        <div className="md:col-span-2 bg-slate-50 rounded-xl p-4 mt-2">
+                            <h4 className="flex items-center gap-2 font-bold text-slate-900 mb-2">
+                                <Icon name="check-square" size={18} className="text-emerald-600"/> Actionable Roadmap
+                            </h4>
+                            <div className="flex flex-col md:flex-row gap-4">
+                                {review.actionable.map((text, i) => (
+                                    <div key={i} className="flex-1 bg-white p-3 rounded-lg border border-slate-200 text-sm text-slate-700 shadow-sm">
+                                        <span className="font-bold text-emerald-600 mr-1">{i+1}.</span> {text}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+
+        const DayAnalysis = ({ stats }) => {
+            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            const workWeekStats = stats.slice(1, 6); 
+            const maxPnL = Math.max(...workWeekStats.map(s => Math.abs(s.pnl))) || 1;
+            
+            return (
+                <div className="card p-6">
+                    <h3 className="font-bold text-slate-900 mb-6 flex items-center gap-2">
+                        <Icon name="calendar-days" size={20} className="text-slate-600" /> Day-wise Performance
+                    </h3>
+                    
+                    <div className="h-40 flex items-end gap-2 mb-2">
+                        {workWeekStats.map((s, i) => {
+                            const height = (Math.abs(s.pnl) / maxPnL) * 100;
+                            const displayHeight = Math.max(height, 2); 
+                            const barColor = s.pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500';
+                            
+                            return (
+                                <div key={i} className="w-1/5 h-full flex flex-col justify-end group relative">
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition bg-slate-800 text-white text-xs py-1 px-2 rounded whitespace-nowrap z-10 pointer-events-none shadow-xl">
+                                        ₹{s.pnl.toLocaleString()} <br/> ({s.wins}/{s.count} wins)
+                                    </div>
+                                    <div className={`w-full rounded-t-md transition-all duration-500 relative ${barColor} opacity-90 hover:opacity-100`} style={{ height: `${displayHeight}%` }}></div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <div className="flex gap-2 text-xs font-bold text-slate-400 text-center">
+                        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((day, i) => <div key={i} className="w-1/5">{day}</div>)}
+                    </div>
+                </div>
+            );
+        };
+
+        const DetailedHourlyChart = ({ title, stats }) => {
+            const marketHours = [9, 10, 11, 12, 13, 14, 15];
+            const relevantStats = marketHours.map(h => stats[h]);
+            const maxVal = Math.max(...relevantStats.map(s => Math.abs(s.pnl))) || 1;
+
+            return (
+                <div className="card p-6">
+                    <h3 className="font-bold text-slate-900 mb-6 flex items-center gap-2">
+                        <Icon name="clock" size={20} className="text-slate-600" /> {title}
+                    </h3>
+                    <div className="h-40 flex items-end gap-2 mb-2">
+                        {relevantStats.map((s, i) => {
+                            const h = (Math.abs(s.pnl) / maxVal) * 100;
+                            const barColor = s.pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500';
+                            return (
+                                <div key={i} className="flex-1 h-full flex flex-col justify-end group relative">
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover:opacity-100 transition bg-slate-800 text-white text-xs py-1 px-2 rounded z-10 pointer-events-none whitespace-nowrap">
+                                        ₹{s.pnl.toLocaleString()} <br/> ({s.count} trades)
+                                    </div>
+                                    <div className={`w-full rounded-t-sm transition-all relative ${barColor} opacity-90 hover:opacity-100`} style={{ height: `${Math.max(h, 2)}%` }}></div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <div className="flex gap-2 text-xs font-bold text-slate-400 text-center">
+                        {marketHours.map((h,i)=><div key={i} className="flex-1">{h}:00</div>)}
+                    </div>
+                </div>
+            );
+        };
+
+        const InstrumentTable = ({ instruments }) => (
+            <div className="card overflow-hidden print-break">
+                <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                    <h3 className="font-bold text-slate-700 flex items-center gap-2"><Icon name="layers" size={18} /> Instrument Performance</h3>
+                </div>
+                <div className="max-h-64 overflow-y-auto">
+                    <table className="w-full text-sm text-left">
+                        <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b sticky top-0">
+                            <tr><th className="px-6 py-3">Instrument</th><th className="px-6 py-3 text-right">Trades</th><th className="px-6 py-3 text-right">Net P&L</th></tr>
+                        </thead>
+                        <tbody>
+                            {instruments.slice(0, 10).map((inst, i) => (
+                                <tr key={i} className="border-b last:border-0 hover:bg-slate-50">
+                                    <td className="px-6 py-3 font-medium text-slate-700">{inst.name}</td>
+                                    <td className="px-6 py-3 text-right text-slate-600">{inst.trades}</td>
+                                    <td className={`px-6 py-3 text-right font-bold ${inst.pnl>=0?'text-emerald-600':'text-rose-600'}`}>₹{inst.pnl.toLocaleString()}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+
+        const EquityChart = ({ curve }) => {
+            const ref = useRef();
+            useEffect(() => {
+                if(!curve || !ref.current) return;
+                const ctx = ref.current.getContext('2d');
+                const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+                gradient.addColorStop(0, 'rgba(37, 99, 235, 0.15)');
+                gradient.addColorStop(1, 'rgba(37, 99, 235, 0)');
+                const chart = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels: curve.map(d => d.x), datasets: [{ label: 'Equity', data: curve.map(d => d.y), borderColor: '#2563eb', backgroundColor: gradient, fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }] },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { border: { display: false }, grid: { color: '#f1f5f9' } } }, interaction: { mode: 'nearest', axis: 'x', intersect: false } }
+                });
+                return () => chart.destroy();
+            }, [curve]);
+            return <canvas ref={ref} />;
+        };
+
+        const MonthlyTable = ({ stats }) => {
+            const months = Object.keys(stats);
+            return (
+                <div className="card overflow-hidden print-break">
+                    <div className="p-4 border-b border-slate-100 bg-slate-50/50"><h3 className="font-bold text-slate-700 flex items-center gap-2"><Icon name="calendar" size={18} /> Monthly Breakdown</h3></div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm text-left">
+                            <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b"><tr><th className="px-6 py-3">Month</th><th className="px-6 py-3 text-right">Trades</th><th className="px-6 py-3 text-right">Win Rate</th><th className="px-6 py-3 text-right">Avg R:R</th><th className="px-6 py-3 text-right">Net P&L</th></tr></thead>
+                            <tbody>
+                                {months.map(m => {
+                                    const s = stats[m];
+                                    const wr = (s.wins/s.trades)*100;
+                                    const avgWin = s.wins ? s.sumWin/s.wins : 0;
+                                    const avgLoss = (s.trades-s.wins) ? s.sumLoss/(s.trades-s.wins) : 0;
+                                    const rr = avgLoss ? (avgWin/avgLoss).toFixed(2) : '∞';
+                                    return <tr key={m} className="border-b last:border-0 hover:bg-slate-50"><td className="px-6 py-3 font-bold text-slate-700">{m}</td><td className="px-6 py-3 text-right text-slate-600">{s.trades}</td><td className="px-6 py-3 text-right text-slate-600">{wr.toFixed(0)}%</td><td className="px-6 py-3 text-right text-slate-600">1 : {rr}</td><td className={`px-6 py-3 text-right font-bold ${s.pnl>=0?'text-emerald-600':'text-rose-600'}`}>{s.pnl.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 })}</td></tr>
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [selectedBroker, setSelectedBroker] = useState(null);
+            const [data, setData] = useState(null);
+            const [error, setError] = useState(null);
+            const fileRef = useRef(null);
+
+            const handleFile = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const result = parseTradeData(ev.target.result, selectedBroker);
+                        setData(result);
+                        setError(null);
+                    } catch (err) { setError(err.message); setData(null); }
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="min-h-screen pb-20 flex flex-col bg-slate-50/50">
+                    <nav className="glass border-b border-slate-200 sticky top-0 z-40">
+                        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-slate-900 text-white p-2.5 rounded-xl shadow-lg shadow-slate-200"><Icon name="bar-chart-big" size={24} /></div>
+                                <div><h1 className="font-extrabold text-xl text-slate-900 leading-none tracking-tight">Trade Audit Pro</h1><span className="text-[11px] font-bold text-blue-600 tracking-wide uppercase">by Trading With Sujay</span></div>
+                            </div>
+                            {data && (
+                                <div className="flex gap-2">
+                                    <button onClick={() => window.print()} className="text-sm font-semibold text-slate-600 hover:text-slate-900 flex items-center gap-2 bg-white border border-slate-200 px-4 py-2 rounded-lg shadow-sm transition no-print"><Icon name="download" size={16} /> Save PDF</button>
+                                    <button onClick={() => { setData(null); setSelectedBroker(null); }} className="text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm transition no-print"><Icon name="plus" size={16} /> New Audit</button>
+                                </div>
+                            )}
+                        </div>
+                    </nav>
+
+                    <div className="flex-grow">
+                        {!data ? (
+                            <div className="max-w-4xl mx-auto mt-16 px-6 animate-fade-in">
+                                <div className="text-center mb-12">
+                                    <h1 className="text-4xl md:text-5xl font-extrabold text-slate-900 mb-6 tracking-tight">Professional Audit <br/> <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">For Your Trading Journey</span></h1>
+                                    <p className="text-lg text-slate-500 max-w-2xl mx-auto">Upload your broker's CSV to get instant, actionable insights. Secure and private.</p>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8 max-w-3xl mx-auto">
+                                    {Object.entries(BROKERS).map(([key, conf]) => (
+                                        <div key={key} onClick={() => setSelectedBroker(key)} className={`cursor-pointer p-4 rounded-xl border flex flex-col items-center gap-3 bg-white transition-all ${selectedBroker === key ? 'border-blue-500 ring-2 ring-blue-100 shadow-md transform -translate-y-1' : 'border-slate-200 hover:border-blue-300 hover:shadow-sm'}`}>
+                                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${conf.bg} ${conf.color}`}><Icon name={key === 'kotak' ? 'infinity' : key === 'zerodha' ? 'zap' : 'bar-chart-2'} size={20} /></div>
+                                            <span className="font-bold text-sm text-slate-700">{conf.name}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                {selectedBroker && (
+                                    <div className="bg-white p-8 rounded-2xl border border-blue-100 shadow-xl shadow-blue-50/50 text-center max-w-lg mx-auto">
+                                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mx-auto mb-4"><Icon name="upload-cloud" size={24} /></div>
+                                        <h3 className="text-lg font-bold text-slate-900 mb-2">Upload CSV</h3>
+                                        <button onClick={() => fileRef.current.click()} className="bg-slate-900 hover:bg-slate-800 text-white px-8 py-3 rounded-lg font-bold shadow-lg shadow-slate-200 transition active:scale-95">Select File</button>
+                                        <input type="file" ref={fileRef} onChange={handleFile} accept=".csv" className="hidden" />
+                                    </div>
+                                )}
+                                {error && <div className="mt-6 text-center text-rose-600 font-medium bg-rose-50 p-3 rounded-lg border border-rose-100 inline-block w-full">{error}</div>}
+                            </div>
+                        ) : (
+                            <main className="max-w-7xl mx-auto px-6 mt-10 space-y-8 animate-slide-up">
+                                <div className="flex flex-col md:flex-row justify-between items-end border-b border-slate-200 pb-4 gap-4">
+                                    <div><h2 className="text-2xl font-bold text-slate-900">Performance Report</h2><p className="text-slate-500 text-sm mt-1">{data.metrics.totalTrades} trades analyzed</p></div>
+                                    {!data.hasCharges && <span className="text-xs bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full font-bold border border-amber-100 flex items-center gap-1.5"><Icon name="info" size={14}/> Gross P&L</span>}
+                                </div>
+
+                                <DetailedReview review={data.review} />
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+                                    <MetricCard label="Net P&L" value={`₹ ${data.metrics.totalPnL.toLocaleString()}`} trend={data.metrics.totalPnL > 0 ? 'good' : 'bad'} icon="wallet" desc={METRIC_INFO["Net P&L"]} />
+                                    <MetricCard label="Win Rate" value={`${data.metrics.winRate.toFixed(1)}%`} trend={data.metrics.winRate > 40 ? 'good' : 'bad'} icon="crosshair" desc={METRIC_INFO["Win Rate"]} />
+                                    <MetricCard label="Profit Factor" value={data.metrics.profitFactor.toFixed(2)} trend={data.metrics.profitFactor > 1.5 ? 'good' : 'bad'} icon="bar-chart-2" desc={METRIC_INFO["Profit Factor"]} />
+                                    <MetricCard label="Expectancy" value={`₹ ${data.metrics.expectancy.toFixed(0)}`} trend={data.metrics.expectancy > 0 ? 'good' : 'bad'} icon="target" desc={METRIC_INFO["Expectancy"]} />
+                                </div>
+                                
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+                                    <MetricCard label="Avg Win" value={`₹ ${data.metrics.avgWin.toFixed(0)}`} trend="good" icon="trending-up" desc={METRIC_INFO["Avg Win"]} />
+                                    <MetricCard label="Avg Loss" value={`₹ ${data.metrics.avgLoss.toFixed(0)}`} trend="bad" icon="trending-down" desc={METRIC_INFO["Avg Loss"]} />
+                                    <MetricCard label="Risk:Reward" value={`1 : ${data.metrics.rrRatio.toFixed(2)}`} trend={data.metrics.rrRatio > 1.5 ? 'good' : 'neutral'} icon="scale" desc={METRIC_INFO["Risk:Reward"]} />
+                                    <MetricCard label="Max Drawdown" value={`₹ ${data.metrics.maxDD.toLocaleString()}`} trend="bad" icon="activity" desc={METRIC_INFO["Max Drawdown"]} />
+                                </div>
+
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                                    <div className="lg:col-span-2 card p-6">
+                                        <h3 className="font-bold text-slate-900 mb-4 flex items-center gap-2"><Icon name="line-chart" size={20} className="text-blue-600" /> Equity Curve</h3>
+                                        <div className="h-64"><EquityChart curve={data.equityCurve} /></div>
+                                    </div>
+                                    <InstrumentTable instruments={data.instrumentStats} />
+                                </div>
+
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 print-break">
+                                    <DayAnalysis stats={data.dayStats} />
+                                    <DetailedHourlyChart title="Entry Hour Performance" stats={data.entryHourStats} />
+                                    <DetailedHourlyChart title="Exit Hour Performance" stats={data.exitHourStats} />
+                                </div>
+
+                                <MonthlyTable stats={data.monthlyStats} />
+                            </main>
+                        )}
+                    </div>
+
+                    <footer className="mt-20 py-12 bg-white border-t border-slate-200 no-print">
+                        <div className="max-w-6xl mx-auto px-6">
+                            <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+                                <div className="text-center md:text-left">
+                                    <div className="flex items-center gap-2 justify-center md:justify-start mb-2"><div className="bg-slate-900 text-white p-1.5 rounded-lg"><Icon name="bar-chart-big" size={18} /></div><span className="font-extrabold text-xl text-slate-900 tracking-tight">Trade Audit Pro</span></div>
+                                    <p className="text-sm text-slate-500">Advanced Trading Performance Analytics</p>
+                                </div>
+                                <div className="text-center md:text-right">
+                                    <p className="text-sm font-medium text-slate-600 mb-1"><span className="font-bold text-blue-600">Trading With Sujay</span></p>
+                                    <p className="text-xs text-slate-400">Designed & Developed by <span className="font-semibold text-slate-600">Sujay Sharma</span></p>
+                                    <p className="text-[10px] text-slate-300 mt-2">© {new Date().getFullYear()} Sujay Sharma. All rights reserved.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+    <style>
+        .animate-fade-in { animation: fadeIn 0.5s ease-out; }
+        .animate-slide-up { animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</body>
+</html>
