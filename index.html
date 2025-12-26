@@ -178,45 +178,81 @@
             transactions.forEach(txn => {
                 if (!openPositions[txn.sec]) {
                     const symbol = txn.sec.toUpperCase();
+                    // OPTIMIZED LONG/SHORT LOGIC FOR OPTIONS
+                    // CE (Call) -> Buy=Long, Sell=Short
+                    // PE (Put)  -> Buy=Short, Sell=Long
                     const isPE = symbol.includes('PE') || symbol.includes('PUT');
+                    
                     let marketBias = 'Long';
-                    if (txn.isBuy) { if (isPE) marketBias = 'Short'; else marketBias = 'Long'; } 
-                    else { if (isPE) marketBias = 'Long'; else marketBias = 'Short'; }
-                    openPositions[txn.sec] = { qty: 0, netCashflow: 0, charges: 0, entryTime: txn.time, exitTime: txn.time, totalBuyQty: 0, totalBuyVal: 0, totalSellQty: 0, totalSellVal: 0, direction: marketBias };
+                    if (txn.isBuy) {
+                        if (isPE) marketBias = 'Short'; // Buying Put = Bearish
+                        else marketBias = 'Long';       // Buying Call/Stock = Bullish
+                    } else {
+                        if (isPE) marketBias = 'Long';  // Selling Put = Bullish
+                        else marketBias = 'Short';      // Selling Call/Stock = Bearish
+                    }
+
+                    openPositions[txn.sec] = { 
+                        qty: 0, netCashflow: 0, charges: 0, entryTime: txn.time, exitTime: txn.time,
+                        totalBuyQty: 0, totalBuyVal: 0, totalSellQty: 0, totalSellVal: 0, 
+                        direction: marketBias 
+                    };
                 }
+
                 const pos = openPositions[txn.sec];
                 const amount = txn.qty * txn.price;
-                if (txn.isBuy) { pos.qty += txn.qty; pos.netCashflow -= amount; pos.totalBuyQty += txn.qty; pos.totalBuyVal += amount; } 
-                else { pos.qty -= txn.qty; pos.netCashflow += amount; pos.totalSellQty += txn.qty; pos.totalSellVal += amount; }
-                pos.charges += txn.charges; pos.netCashflow -= txn.charges; pos.exitTime = txn.time;
+                
+                if (txn.isBuy) { 
+                    pos.qty += txn.qty; pos.netCashflow -= amount; 
+                    pos.totalBuyQty += txn.qty; pos.totalBuyVal += amount;
+                } else { 
+                    pos.qty -= txn.qty; pos.netCashflow += amount; 
+                    pos.totalSellQty += txn.qty; pos.totalSellVal += amount;
+                }
+                
+                pos.charges += txn.charges;
+                pos.netCashflow -= txn.charges; 
+                pos.exitTime = txn.time;
+                
                 if (Math.abs(pos.qty) < 0.0001) {
                     const tradeQty = Math.max(pos.totalBuyQty, pos.totalSellQty);
                     const avgBuyPrice = pos.totalBuyQty > 0 ? pos.totalBuyVal / pos.totalBuyQty : 0;
                     const avgSellPrice = pos.totalSellQty > 0 ? pos.totalSellVal / pos.totalSellQty : 0;
+
                     completedTrades.push({
-                        id: txn.sec, netPnL: pos.netCashflow, charges: pos.charges, entryTime: pos.entryTime, exitTime: pos.exitTime,
+                        id: txn.sec,
+                        netPnL: pos.netCashflow,
+                        charges: pos.charges,
+                        entryTime: pos.entryTime,
+                        exitTime: pos.exitTime,
                         durationMins: (pos.exitTime - pos.entryTime) / 60000,
                         monthKey: pos.exitTime.toLocaleString('default', { month: 'short', year: '2-digit' }),
-                        dayOfWeek: pos.exitTime.getDay(), entryHour: pos.entryTime.getHours(), exitHour: pos.exitTime.getHours(),
+                        dayOfWeek: pos.exitTime.getDay(),
+                        entryHour: pos.entryTime.getHours(),
+                        exitHour: pos.exitTime.getHours(),
                         dateStr: pos.exitTime.toISOString().split('T')[0],
-                        qty: tradeQty, entryPrice: pos.direction === 'Long' ? avgBuyPrice : avgSellPrice,
-                        exitPrice: pos.direction === 'Long' ? avgSellPrice : avgBuyPrice, direction: pos.direction
+                        qty: tradeQty,
+                        entryPrice: pos.direction === 'Long' ? avgBuyPrice : avgSellPrice, 
+                        exitPrice: pos.direction === 'Long' ? avgSellPrice : avgBuyPrice,
+                        direction: pos.direction
                     });
                     delete openPositions[txn.sec];
                 }
             });
+
             if (completedTrades.length === 0) throw new Error("No completed trades found. (Did you close your positions?)");
+
             return processTrades(completedTrades, idxs.charges !== -1);
         };
 
-        // --- METRIC AGGREGATION ---
+        // --- METRIC AGGREGATION & LOGIC ---
         const processTrades = (completedTrades, hasCharges, excludeDayCount = 0, directionFilter = 'all') => {
             // 1. Filter Direction
             let directionFilteredTrades = [...completedTrades];
             if (directionFilter === 'long') directionFilteredTrades = directionFilteredTrades.filter(t => t.direction === 'Long');
             else if (directionFilter === 'short') directionFilteredTrades = directionFilteredTrades.filter(t => t.direction === 'Short');
 
-            // 2. Identify Bad Days on Filtered Data
+            // 2. Identify Bad Days
             const dailyData = {};
             directionFilteredTrades.forEach(t => {
                 if (!dailyData[t.dateStr]) dailyData[t.dateStr] = { pnl: 0, trades: [], maxRunningPnL: -Infinity };
@@ -252,6 +288,8 @@
             const entryHourStats = Array(24).fill(null).map(() => ({ pnl: 0, count: 0 }));
             const exitHourStats = Array(24).fill(null).map(() => ({ pnl: 0, count: 0 }));
             const instrumentStats = {};
+            
+            // NOTE: DirectionStats should now be calculated on FILTERED TRADES to react to Discipline Simulator
             const directionStats = { Long: { pnl: 0, trades: 0, wins: 0 }, Short: { pnl: 0, trades: 0, wins: 0 } };
 
             filteredTrades.sort((a,b) => a.exitTime - b.exitTime);
@@ -263,14 +301,13 @@
                 if(t.entryHour >= 0 && t.entryHour < 24) { entryHourStats[t.entryHour].pnl += t.netPnL; entryHourStats[t.entryHour].count++; }
                 if(t.exitHour >= 0 && t.exitHour < 24) { exitHourStats[t.exitHour].pnl += t.netPnL; exitHourStats[t.exitHour].count++; }
 
-                // Direction Stats (Filtered View)
+                // Updated Direction Stats Calculation inside the filtered loop
                 if (t.direction && directionStats[t.direction]) {
                     directionStats[t.direction].pnl += t.netPnL;
                     directionStats[t.direction].trades++;
                     if (t.netPnL > 0) directionStats[t.direction].wins++;
                 }
 
-                // Instrument Stats
                 let symbolRoot = t.id;
                 const upperId = t.id.toUpperCase();
                 if (upperId.includes('BANKNIFTY')) symbolRoot = 'BANKNIFTY';
@@ -289,18 +326,16 @@
                 else { losses++; sumLoss += Math.abs(t.netPnL); monthlyStats[t.monthKey].sumLoss += Math.abs(t.netPnL); durationLoss += t.durationMins; }
             });
 
-            // Calculate Base Reality PnL for Discipline Slider Comparison (Respects Direction Filter, ignores Discipline)
+            // Base Reality Calculation
             let baseRealityPnL = 0;
             const originalCurve = [];
             const baseSorted = [...directionFilteredTrades].sort((a,b) => a.exitTime - b.exitTime);
             baseSorted.forEach(t => { baseRealityPnL += t.netPnL; originalCurve.push({ x: t.dateStr, y: baseRealityPnL }); });
 
-            // Calculate FULL Direction Stats (Ignoring all filters, for the "Long vs Short" chart)
             const fullDirectionStats = { Long: { pnl: 0, trades: 0, wins: 0 }, Short: { pnl: 0, trades: 0, wins: 0 } };
             completedTrades.forEach(t => {
                  if (t.direction && fullDirectionStats[t.direction]) {
-                    fullDirectionStats[t.direction].pnl += t.netPnL;
-                    fullDirectionStats[t.direction].trades++;
+                    fullDirectionStats[t.direction].pnl += t.netPnL; fullDirectionStats[t.direction].trades++;
                     if (t.netPnL > 0) fullDirectionStats[t.direction].wins++;
                 }
             });
@@ -313,7 +348,7 @@
             const profitFactor = sumLoss ? sumWin/sumLoss : 0;
             const expectancy = (winRate/100 * avgWin) - ((100-winRate)/100 * avgLoss);
             const rrRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
-            const review = generateReview(filteredTrades, equity); // Generate review based on filtered view
+            const review = generateReview(filteredTrades, equity); 
             const sortedInstruments = Object.entries(instrumentStats).map(([name, s]) => ({ name, ...s })).sort((a,b) => b.pnl - a.pnl);
 
             return {
@@ -323,7 +358,8 @@
                 baseRealityPnL, // PnL before discipline filter
                 equityCurve, originalCurve, monthlyStats, dayStats, entryHourStats, exitHourStats, 
                 instrumentStats: sortedInstruments, 
-                directionStats: fullDirectionStats, // Show global stats in chart
+                directionStats: directionStats, // Use filtered stats for dynamic update
+                fullDirectionStats: fullDirectionStats, // Keep full stats if needed
                 review,
                 metrics: { totalTrades, winRate, totalPnL, maxDD, avgWin, avgLoss, profitFactor, rrRatio, expectancy },
                 hasCharges
@@ -335,14 +371,13 @@
             let durationWin=0, durationLoss=0;
             const dayStats = Array(7).fill(null).map(() => ({ pnl: 0, count: 0 }));
             const entryHourStats = Array(24).fill(null).map(() => ({ pnl: 0 }));
+            trades.sort((a,b) => a.exitTime - b.exitTime);
             let currentWinStreak = 0; let streakBlowoutCount = 0; let revengeTradeCount = 0; let revengeLossCount = 0; 
-
             for (let i = 0; i < trades.length; i++) {
                 const t = trades[i];
                 equity += t.netPnL; peak = Math.max(peak, equity); const dd = equity - peak; maxDD = Math.min(maxDD, dd);
                 dayStats[t.dayOfWeek].pnl += t.netPnL; dayStats[t.dayOfWeek].count++;
                 if(t.entryHour >= 0 && t.entryHour < 24) entryHourStats[t.entryHour].pnl += t.netPnL;
-
                 if (t.netPnL > 0) { wins++; sumWin += t.netPnL; durationWin += t.durationMins; currentWinStreak++; } 
                 else {
                     losses++; sumLoss += Math.abs(t.netPnL); durationLoss += t.durationMins;
@@ -357,7 +392,6 @@
                     }
                 }
             }
-
             const totalTrades = trades.length;
             const winRate = totalTrades ? (wins/totalTrades)*100 : 0;
             const profitFactor = sumLoss ? sumWin/sumLoss : 0;
@@ -376,7 +410,6 @@
                 if (profitFactor > 0.8) { review.grade = "C"; review.title = "Breakeven Struggle"; review.color="text-orange-500"; review.bg="bg-orange-50"; }
                 else { review.grade = "D"; review.title = "Needs Overhaul"; review.color="text-rose-600"; review.bg="bg-rose-50"; }
             }
-
             if (winRate < 40 && rrRatio < 1.5) review.strategic.push("Critical Strategic Flaw: Your system currently has both low accuracy and low payout. To be profitable, you either need to boost your Win Rate above 50% or ensure your Winners are at least 2x your Losers.");
             else if (winRate < 40 && rrRatio > 2.0) review.strategic.push("Sniper Profile Detected: You have a lower win rate, but your winners are massive compared to losers. This is a stressful but professionally valid style. The key is surviving the losing streaks without changing your rules.");
             else if (winRate > 60 && rrRatio < 0.8) review.strategic.push("Scalper Profile Detected: You rely on high accuracy to make money. However, your Reward:Risk is inverted (losses are bigger than wins). One bad day can wipe out a week of progress. You must tighten your Stop Loss.");
@@ -396,6 +429,7 @@
             return review;
         };
 
+        // --- COMPONENTS ---
         const DisciplineSlider = ({ value, onChange, originalPnL, newPnL, excludedDays }) => {
             const diff = newPnL - originalPnL;
             const pnlColor = newPnL >= 0 ? "text-emerald-600" : "text-rose-600";
@@ -473,24 +507,8 @@
                 <div className="card p-6">
                     <h3 className="font-bold text-slate-900 mb-6 flex items-center gap-2"><Icon name="arrow-left-right" size={20} className="text-indigo-600" /> Long vs. Short Analysis</h3>
                     <div className="flex justify-center items-end h-40 gap-16">
-                        <div className="w-16 flex flex-col items-center group relative h-full justify-end">
-                            <div className="absolute bottom-full mb-2 opacity-0 group-hover:opacity-100 transition bg-slate-800 text-white text-xs py-1 px-2 rounded whitespace-nowrap z-10 pointer-events-none shadow-xl">{long.trades} trades, {longWinRate.toFixed(0)}% WR</div>
-                            <div className="w-full bg-slate-100 rounded-t-full h-full relative overflow-hidden"><div className={`absolute bottom-0 left-0 right-0 transition-all duration-500 ${long.pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ height: `${Math.max((Math.abs(long.pnl) / maxPnL) * 100, 2)}%` }}></div></div>
-                            <div className="mt-2 text-center">
-                                <div className="text-sm font-bold text-slate-700">Long</div>
-                                <div className="text-xs text-slate-500 font-medium mb-0.5">{long.trades} trades</div>
-                                <div className={`text-xs font-semibold ${long.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{long.pnl.toLocaleString()}</div>
-                            </div>
-                        </div>
-                        <div className="w-16 flex flex-col items-center group relative h-full justify-end">
-                            <div className="absolute bottom-full mb-2 opacity-0 group-hover:opacity-100 transition bg-slate-800 text-white text-xs py-1 px-2 rounded whitespace-nowrap z-10 pointer-events-none shadow-xl">{short.trades} trades, {shortWinRate.toFixed(0)}% WR</div>
-                            <div className="w-full bg-slate-100 rounded-t-full h-full relative overflow-hidden"><div className={`absolute bottom-0 left-0 right-0 transition-all duration-500 ${short.pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ height: `${Math.max((Math.abs(short.pnl) / maxPnL) * 100, 2)}%` }}></div></div>
-                            <div className="mt-2 text-center">
-                                <div className="text-sm font-bold text-slate-700">Short</div>
-                                <div className="text-xs text-slate-500 font-medium mb-0.5">{short.trades} trades</div>
-                                <div className={`text-xs font-semibold ${short.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{short.pnl.toLocaleString()}</div>
-                            </div>
-                        </div>
+                        <div className="w-16 flex flex-col items-center group relative h-full justify-end"><div className="absolute bottom-full mb-2 opacity-0 group-hover:opacity-100 transition bg-slate-800 text-white text-xs py-1 px-2 rounded whitespace-nowrap z-10 pointer-events-none shadow-xl">{long.trades} trades, {longWinRate.toFixed(0)}% WR</div><div className="w-full bg-slate-100 rounded-t-full h-full relative overflow-hidden"><div className={`absolute bottom-0 left-0 right-0 transition-all duration-500 ${long.pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ height: `${Math.max((Math.abs(long.pnl) / maxPnL) * 100, 2)}%` }}></div></div><div className="mt-2 text-center"><div className="text-sm font-bold text-slate-700">Long</div><div className="text-xs text-slate-500 font-medium mb-0.5">{long.trades} trades</div><div className={`text-xs font-semibold ${long.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{long.pnl.toLocaleString()}</div></div></div>
+                        <div className="w-16 flex flex-col items-center group relative h-full justify-end"><div className="absolute bottom-full mb-2 opacity-0 group-hover:opacity-100 transition bg-slate-800 text-white text-xs py-1 px-2 rounded whitespace-nowrap z-10 pointer-events-none shadow-xl">{short.trades} trades, {shortWinRate.toFixed(0)}% WR</div><div className="w-full bg-slate-100 rounded-t-full h-full relative overflow-hidden"><div className={`absolute bottom-0 left-0 right-0 transition-all duration-500 ${short.pnl >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ height: `${Math.max((Math.abs(short.pnl) / maxPnL) * 100, 2)}%` }}></div></div><div className="mt-2 text-center"><div className="text-sm font-bold text-slate-700">Short</div><div className="text-xs text-slate-500 font-medium mb-0.5">{short.trades} trades</div><div className={`text-xs font-semibold ${short.pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>₹{short.pnl.toLocaleString()}</div></div></div>
                     </div>
                 </div>
             );
@@ -602,12 +620,11 @@
             const [selectedBroker, setSelectedBroker] = useState(null);
             const [data, setData] = useState(null);
             const [error, setError] = useState(null);
-            const [disciplineLevel, setDisciplineLevel] = useState(0); // 0 = Reality
-            const [directionFilter, setDirectionFilter] = useState('all'); // NEW State
+            const [disciplineLevel, setDisciplineLevel] = useState(0); 
+            const [directionFilter, setDirectionFilter] = useState('all'); 
             const fileRef = useRef(null);
             const uploadSectionRef = useRef(null); 
             
-            // Store RAW trade data so we can re-process when slider changes
             const [rawTrades, setRawTrades] = useState(null);
             const [hasCharges, setHasCharges] = useState(true);
 
@@ -615,14 +632,10 @@
                 if (selectedBroker && uploadSectionRef.current) uploadSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }, [selectedBroker]);
 
-            // Re-process metrics when discipline level changes
             useEffect(() => {
                 if (rawTrades) {
                     const newData = processTrades(rawTrades, hasCharges, disciplineLevel, directionFilter);
-                    if (disciplineLevel > 0) {
-                        // Keep original review
-                        newData.review = data.review; 
-                    }
+                    if (disciplineLevel > 0) newData.review = data.review; 
                     setData(newData);
                 }
             }, [disciplineLevel, directionFilter]); 
@@ -634,7 +647,7 @@
                 reader.onload = (ev) => {
                     try {
                         const result = parseTradeData(ev.target.result, selectedBroker);
-                        setRawTrades(result.trades); // Store raw
+                        setRawTrades(result.trades); 
                         setHasCharges(result.hasCharges);
                         setData(result);
                         setError(null);
