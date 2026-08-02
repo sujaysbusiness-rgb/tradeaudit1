@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trade Audit Pro | Trading With Sujay</title>
+    <title>Analytics Pro | Trading With Sujay</title>
     
     <!-- React & ReactDOM -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -835,7 +835,7 @@
                             <div className="flex items-center gap-3 cursor-pointer" onClick={handleReload}>
                                 <div className="bg-slate-900 text-white p-2.5 rounded-xl shadow-lg shadow-slate-200"><Icon name="bar-chart-big" size={24} /></div>
                                 <div>
-                                    <h1 className="font-extrabold text-xl text-slate-900 leading-none tracking-tight">Trade Audit Pro</h1>
+                                    <h1 className="font-extrabold text-xl text-slate-900 leading-none tracking-tight">Analytics Pro</h1>
                                     <div className="flex items-center gap-2 mt-0.5">
                                         <span className="text-[10px] font-bold text-blue-600 tracking-wide uppercase">by Trading With Sujay</span>
                                     </div>
@@ -884,7 +884,7 @@
                                         <FAQItem question="Is my data safe?" answer="Absolutely. This tool runs entirely in your browser. Your trading CSV file is processed locally on your device and is never uploaded to any server. You can even disconnect your internet after loading the page and it will still work." />
                                         <FAQItem question="Which brokers are supported?" answer="We officially support Kotak, Zerodha, and Dhan. For any other broker (Angel, Groww, Upstox, etc.), select the 'Other Broker' option and manually map your columns in seconds." />
                                         <FAQItem question="How do I download my Tradebook?" answer="Log in to your broker's backoffice console (e.g., Zerodha Console, Kotak Neo Backoffice). Look for 'Reports' > 'Tradebook' or 'Global P&L'. Download the report as a CSV file for the desired date range." />
-                                        <FAQItem question="Why does my Win Rate look different?" answer="Brokers often calculate metrics differently. Trade Audit Pro groups scalped trades of the same instrument into a single 'Round Trip' trade to give you a true picture of your strategy's effectiveness, rather than just raw order execution stats." />
+                                        <FAQItem question="Why does my Win Rate look different?" answer="Brokers often calculate metrics differently. Analytics Pro groups scalped trades of the same instrument into a single 'Round Trip' trade to give you a true picture of your strategy's effectiveness, rather than just raw order execution stats." />
                                         <FAQItem question="What is 'Discipline Simulator'?" answer="It's a powerful 'What If' analysis tool. It allows you to see what your P&L would look like if you had avoided your worst trading days (e.g., revenge trading days). It highlights how much profit you leave on the table due to lack of discipline." />
                                         <FAQItem question="Does it support Options Trading?" answer="Yes! The tool automatically detects Options trades (CE/PE) and intelligently groups them. Buying a PE is correctly analyzed as a 'Short' (Bearish) trade, while Selling a PE is a 'Long' (Bullish) trade." />
                                         <FAQItem question="How is 'Net P&L' calculated?" answer="Net P&L is your Gross Profit minus all brokerage, taxes, and transaction charges found in your CSV. If your broker CSV doesn't include charges (like Zerodha), the tool will show Gross P&L and mark it clearly." />
@@ -945,14 +945,8 @@
                         <div className="max-w-6xl mx-auto px-6">
                             <div className="flex flex-col md:flex-row justify-between items-center gap-6">
                                 <div className="text-center md:text-left">
-                                    <div className="flex items-center gap-2 justify-center md:justify-start mb-2"><div className="bg-slate-900 text-white p-1.5 rounded-lg"><Icon name="bar-chart-big" size={18} /></div><span className="font-extrabold text-xl text-slate-900 tracking-tight">Trade Audit Pro</span></div>
+                                    <div className="flex items-center gap-2 justify-center md:justify-start mb-2"><div className="bg-slate-900 text-white p-1.5 rounded-lg"><Icon name="bar-chart-big" size={18} /></div><span className="font-extrabold text-xl text-slate-900 tracking-tight">Analytics Pro</span></div>
                                     <p className="text-sm text-slate-500">Advanced Trading Performance Analytics</p>
-                                </div>
-                                <p className="text-center text-sm text-slate-500"><span className=" text-blue-500"><a href="https://tinyurl.com/3c4c3kxy" target="_blank">Click to join our Telegram Community<br/>Feedback | Suggestion | Doubts</a></span></p>
-                                <div className="text-center md:text-right">
-                                    <p className="text-sm font-medium text-slate-600 mb-1"><span className="font-bold text-blue-600">Trading With Sujay</span></p>
-                                    <p className="text-xs text-slate-400">Designed & Developed by <span className="font-semibold text-slate-600">Sujay Sharma</span></p>
-                                    <p className="text-[10px] text-slate-300 mt-2">© {new Date().getFullYear()} Sujay Sharma. All rights reserved.</p>
                                 </div>
                             </div>
                         </div>
